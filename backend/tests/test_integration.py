@@ -57,6 +57,51 @@ class TestAuthFlow:
         assert (await client.post("/api/v1/auth/register", json=payload)).status_code == 201
         assert (await client.post("/api/v1/auth/register", json=payload)).status_code == 409
 
+    async def test_login_sets_httponly_refresh_cookie_not_body(self, client):
+        await client.post("/api/v1/auth/register", json={
+            "email": "cookie@acme.com", "password": "SuperSecret123!",
+            "full_name": "C", "organization_name": "Org",
+        })
+        resp = await client.post("/api/v1/auth/login", json={
+            "email": "cookie@acme.com", "password": "SuperSecret123!",
+        })
+        assert resp.status_code == 200
+        # Refresh token must NOT be in the JSON body...
+        assert resp.json().get("refresh_token") is None
+        # ...it must be an httpOnly cookie.
+        set_cookie = resp.headers.get("set-cookie", "")
+        assert "refresh_token=" in set_cookie
+        assert "httponly" in set_cookie.lower()
+
+    async def test_refresh_uses_cookie_and_logout_clears_it(self, client):
+        await client.post("/api/v1/auth/register", json={
+            "email": "rot@acme.com", "password": "SuperSecret123!",
+            "full_name": "R", "organization_name": "Org",
+        })
+        await client.post("/api/v1/auth/login", json={
+            "email": "rot@acme.com", "password": "SuperSecret123!",
+        })
+        # The AsyncClient retains the cookie jar, so /refresh works with no body.
+        refreshed = await client.post("/api/v1/auth/refresh")
+        assert refreshed.status_code == 200
+        assert refreshed.json()["access_token"]
+
+        out = await client.post("/api/v1/auth/logout")
+        assert out.status_code == 200
+
+    async def test_refresh_without_cookie_is_unauthorized(self, client):
+        assert (await client.post("/api/v1/auth/refresh")).status_code == 401
+
+    async def test_login_is_rate_limited(self, client):
+        # 11 attempts from the same client; the limiter (10/min) trips a 429.
+        statuses = []
+        for _ in range(12):
+            r = await client.post("/api/v1/auth/login", json={
+                "email": "nobody@acme.com", "password": "whatever12345",
+            })
+            statuses.append(r.status_code)
+        assert 429 in statuses
+
 
 # ── Multi-tenant isolation ───────────────────────────────────────────────────
 
@@ -178,6 +223,27 @@ class TestRiskScoringEngine:
         row = await engine.persist_score(result, str(admin.organization_id))
         assert row.id is not None
         assert row.overall_score == result.overall_score
+
+    async def test_list_latest_scores_endpoint(self, client, db):
+        admin = await make_org_and_user(db, email="scores@acme.test")
+        supplier = Supplier(
+            organization_id=admin.organization_id, name="Scored Co", country="USA", tier=1,
+        )
+        db.add(supplier)
+        await db.commit()
+        await db.refresh(supplier)
+        # Compute + persist a score via the API so the listing has data.
+        calc = await client.post(
+            f"/api/v1/risk/suppliers/{supplier.id}/score", headers=auth_header(admin)
+        )
+        assert calc.status_code == 200, calc.text
+
+        resp = await client.get("/api/v1/risk/scores", headers=auth_header(admin))
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["total"] == 1
+        assert body["scores"][0]["supplier_name"] == "Scored Co"
+        assert "risk_level" in body["scores"][0]
 
 
 # ── Recommendation engine (real service path) ────────────────────────────────

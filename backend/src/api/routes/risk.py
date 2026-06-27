@@ -1,7 +1,7 @@
 """Risk intelligence API routes."""
 from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import select, desc
+from sqlalchemy import select, desc, func, and_
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.config.database import get_db
@@ -86,6 +86,61 @@ async def get_risk_score_history(
             for s in scores
         ],
     }
+
+
+@router.get("/scores")
+async def list_latest_risk_scores(
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Latest computed risk score for every scored supplier in the organization.
+    Powers the org-wide Risk Intelligence overview (most-at-risk first).
+    """
+    org_id = current_user.organization_id
+
+    # Subquery: the most recent score timestamp per supplier.
+    latest = (
+        select(
+            RiskScore.supplier_id,
+            func.max(RiskScore.calculated_at).label("latest"),
+        )
+        .where(RiskScore.organization_id == org_id)
+        .group_by(RiskScore.supplier_id)
+        .subquery()
+    )
+
+    result = await db.execute(
+        select(RiskScore, Supplier.name, Supplier.country, Supplier.tier)
+        .join(
+            latest,
+            and_(
+                RiskScore.supplier_id == latest.c.supplier_id,
+                RiskScore.calculated_at == latest.c.latest,
+            ),
+        )
+        .join(Supplier, Supplier.id == RiskScore.supplier_id)
+        .order_by(desc(RiskScore.overall_score))
+    )
+
+    scores = [
+        {
+            "supplier_id": str(rs.supplier_id),
+            "supplier_name": name,
+            "country": country,
+            "tier": tier,
+            "overall_score": rs.overall_score,
+            "risk_level": _risk_level(rs.overall_score),
+            "climate_score": rs.climate_score,
+            "geopolitical_score": rs.geopolitical_score,
+            "operational_score": rs.operational_score,
+            "logistics_score": rs.logistics_score,
+            "dependency_score": rs.dependency_score,
+            "calculated_at": rs.calculated_at.isoformat(),
+        }
+        for rs, name, country, tier in result.all()
+    ]
+    return {"scores": scores, "total": len(scores)}
 
 
 @router.get("/events")

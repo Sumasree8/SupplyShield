@@ -4,7 +4,7 @@
  */
 import axios, { AxiosInstance, AxiosError } from 'axios';
 import type {
-  AuthTokens, User, Supplier, GraphData, RiskScore,
+  AuthTokens, User, Supplier, GraphData, RiskScore, SupplierRiskScore,
   Alert, DisruptionImpact, PaginatedResponse
 } from '@/types';
 
@@ -17,6 +17,8 @@ class ApiClient {
     this.client = axios.create({
       baseURL: `${BASE_URL}/api/v1`,
       headers: { 'Content-Type': 'application/json' },
+      // Send the httpOnly refresh-token cookie on auth requests.
+      withCredentials: true,
     });
 
     // Inject auth token
@@ -39,21 +41,16 @@ class ApiClient {
           return Promise.reject(error);
         }
 
-        const refresh = localStorage.getItem('refresh_token');
-        if (!refresh) {
-          this.forceLogout();
-          return Promise.reject(error);
-        }
-
         original._retry = true;
         try {
-          // Share a single in-flight refresh across concurrent 401s.
+          // Share a single in-flight refresh across concurrent 401s. The
+          // refresh token rides along as an httpOnly cookie (withCredentials),
+          // so it is never read from or written to JavaScript-accessible storage.
           this.refreshPromise ??= axios
-            .post(`${BASE_URL}/api/v1/auth/refresh`, null, { params: { refresh_token: refresh } })
+            .post(`${BASE_URL}/api/v1/auth/refresh`, null, { withCredentials: true })
             .then((res) => {
-              const { access_token, refresh_token } = res.data as AuthTokens;
+              const { access_token } = res.data as AuthTokens;
               localStorage.setItem('access_token', access_token);
-              localStorage.setItem('refresh_token', refresh_token);
               return access_token;
             })
             .finally(() => { this.refreshPromise = null; });
@@ -73,7 +70,6 @@ class ApiClient {
 
   private forceLogout() {
     localStorage.removeItem('access_token');
-    localStorage.removeItem('refresh_token');
     if (window.location.pathname !== '/login') {
       window.location.href = '/login';
     }
@@ -83,6 +79,11 @@ class ApiClient {
   async login(email: string, password: string): Promise<AuthTokens> {
     const res = await this.client.post('/auth/login', { email, password });
     return res.data;
+  }
+
+  async logout(): Promise<void> {
+    // Clears the httpOnly refresh cookie server-side.
+    try { await this.client.post('/auth/logout'); } catch { /* ignore */ }
   }
 
   async register(data: {
@@ -160,6 +161,11 @@ class ApiClient {
 
   async getRiskScoreHistory(supplierId: string, limit = 10) {
     const res = await this.client.get(`/risk/suppliers/${supplierId}/scores`, { params: { limit } });
+    return res.data;
+  }
+
+  async listLatestRiskScores(): Promise<{ scores: SupplierRiskScore[]; total: number }> {
+    const res = await this.client.get('/risk/scores');
     return res.data;
   }
 

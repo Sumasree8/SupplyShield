@@ -269,7 +269,7 @@ class RiskScoringEngine:
         if status_score > 0:
             base_score += status_score
             factors.append(ScoringFactor(
-                description=f"Supplier status: {supplier.status.value}",
+                description=f"Supplier status: {status_value}",
                 category="operational",
                 score_contribution=status_score,
                 weight=DEFAULT_WEIGHTS["operational"],

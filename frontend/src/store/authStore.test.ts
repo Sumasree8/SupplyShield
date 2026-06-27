@@ -3,7 +3,8 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 // Mock the API client the store depends on.
 vi.mock('@/services/api', () => ({
   api: {
-    login: vi.fn(async () => ({ access_token: 'a.b.c', refresh_token: 'r.e.f' })),
+    login: vi.fn(async () => ({ access_token: 'a.b.c' })),
+    logout: vi.fn(async () => undefined),
     getMe: vi.fn(async () => ({
       id: '1', email: 'u@example.com', full_name: 'U', role: 'admin',
       organization_id: 'o1', organization_name: 'Org',
@@ -21,10 +22,11 @@ beforeEach(() => {
 });
 
 describe('authStore', () => {
-  it('login stores tokens and marks authenticated', async () => {
+  it('login stores only the access token (refresh is an httpOnly cookie)', async () => {
     await useAuthStore.getState().login('u@example.com', 'pw');
     expect(localStorage.getItem('access_token')).toBe('a.b.c');
-    expect(localStorage.getItem('refresh_token')).toBe('r.e.f');
+    // Refresh token must never be written to JS-accessible storage.
+    expect(localStorage.getItem('refresh_token')).toBeNull();
     expect(useAuthStore.getState().isAuthenticated).toBe(true);
     expect(useAuthStore.getState().user?.email).toBe('u@example.com');
   });

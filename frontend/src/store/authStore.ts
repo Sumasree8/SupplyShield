@@ -24,8 +24,9 @@ export const useAuthStore = create<AuthState>((set) => ({
     set({ isLoading: true });
     try {
       const tokens = await api.login(email, password);
+      // Only the short-lived access token lives in JS; the refresh token is an
+      // httpOnly cookie set by the server and never touched here.
       localStorage.setItem('access_token', tokens.access_token);
-      localStorage.setItem('refresh_token', tokens.refresh_token);
       const user = await api.getMe();
       set({ user, isAuthenticated: true, isLoading: false });
     } catch (e) {
@@ -35,8 +36,8 @@ export const useAuthStore = create<AuthState>((set) => ({
   },
 
   logout: () => {
+    void api.logout(); // clear the httpOnly refresh cookie server-side
     localStorage.removeItem('access_token');
-    localStorage.removeItem('refresh_token');
     set({ user: null, isAuthenticated: false });
   },
 

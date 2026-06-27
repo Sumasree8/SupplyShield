@@ -37,6 +37,18 @@ to "builds, runs, and is covered by real tests." Grouped by severity.
 - nginx: added a Content-Security-Policy, used `always`, and repeated security headers in the static-asset block (a local `add_header` otherwise drops inherited ones).
 - Frontend: added an `ErrorBoundary` (render throws no longer white-screen the SPA) and fixed the 401 refresh interceptor (single in-flight refresh, `_retry` guard against infinite loops).
 
+## Security hardening (auth)
+
+- **Refresh tokens moved to httpOnly cookies.** Login sets the refresh token as an `httpOnly`,
+  `SameSite=Lax`, `Secure`-in-production cookie scoped to `/api/v1/auth` — it is never exposed to
+  JavaScript (XSS-resistant). The body returns only the short-lived access token; `/auth/refresh`
+  reads and rotates the cookie; `/auth/logout` clears it. The SPA sends it via `withCredentials` and
+  no longer stores a refresh token in `localStorage`. (Residual: the short-lived access token is still
+  in `localStorage` — moving it fully in-memory is the next step.)
+- **Login & registration rate limiting.** A sliding-window limiter (`src/middleware/rate_limit.py`)
+  throttles `/auth/login` (10/min) and `/auth/register` (5/5min) per client IP to blunt brute-force /
+  credential-stuffing. Per-process today; back it with Redis for multi-instance deployments.
+
 ## Tests
 
 Replaced the previous suite — which re-implemented logic inline and asserted on the

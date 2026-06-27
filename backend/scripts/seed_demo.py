@@ -13,6 +13,7 @@ import asyncio
 import os
 import sys
 import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 
 # Ensure project root is on path
@@ -29,7 +30,7 @@ async def seed():
     from src.config.database import AsyncSessionLocal, Base, engine
     from src.models.core import Organization, User
     from src.models.supply_chain import Supplier, Material, SupplierMaterial, SupplyRelationship
-    from src.models.risk import Alert, AlertSeverity, AlertStatus, RiskCategory
+    from src.models.risk import Alert, AlertSeverity, AlertStatus, RiskCategory, RiskEvent
     from src.services.auth_service import hash_password
     from src.services.risk_scoring_service import RiskScoringEngine
 
@@ -149,6 +150,9 @@ async def seed():
             )
             db.add(s)
             tier3.append(s)
+        # Demo variety: flag one upstream supplier as suspended so the risk
+        # scores span more than one level (operational risk pushes it higher).
+        tier3[0].status = "suspended"
         await db.flush()
         print(f"✓ Created {len(tier3)} Tier 3 suppliers")
 
@@ -221,10 +225,49 @@ async def seed():
         print(f"✓ Created {rel_count} supply relationships")
         print("✓ Marked lithium supplier as sole-source dependency (critical risk)")
 
+        # ── Demo external risk events ─────────────────────────────────────
+        # Sample events matched to supplier geographies. These drive the
+        # climate/geopolitical/logistics components of the risk scores below
+        # and populate the "External Risk Events" view. (In production these
+        # come from the NOAA/GDELT/OpenWeather ingestion jobs.)
+        events = [
+            RiskEvent(
+                source="noaa", category=RiskCategory.CLIMATE,
+                title="Typhoon warning — East Asia coastal manufacturing belt",
+                description="Category 4 typhoon tracking toward Taiwan and southern Japan.",
+                severity="severe", affected_countries=["Taiwan", "Japan"],
+                event_date=datetime.now(timezone.utc),
+            ),
+            RiskEvent(
+                source="gdelt", category=RiskCategory.GEOPOLITICAL,
+                title="Export controls tighten on critical minerals",
+                description="New restrictions announced affecting battery-material exports.",
+                severity="extreme", affected_countries=["China"],
+                event_date=datetime.now(timezone.utc),
+            ),
+            RiskEvent(
+                source="gdelt", category=RiskCategory.GEOPOLITICAL,
+                title="Semiconductor trade tensions escalate",
+                description="Heightened cross-strait tension raising semiconductor supply concerns.",
+                severity="severe", affected_countries=["Taiwan"],
+                event_date=datetime.now(timezone.utc),
+            ),
+            RiskEvent(
+                source="port_congestion_api", category=RiskCategory.LOGISTICS,
+                title="Port congestion — Northern Europe",
+                description="Multi-day backlogs at major German seaports.",
+                severity="moderate", affected_countries=["Germany"],
+                event_date=datetime.now(timezone.utc),
+            ),
+        ]
+        db.add_all(events)
+        await db.flush()
+        print(f"✓ Ingested {len(events)} demo risk events")
+
         # ── Computed risk scores ──────────────────────────────────────────
         # Real, explainable scores derived from the seeded data (sole-source
-        # flags, downstream concentration, missing certs) — so the Risk page
-        # is populated on first login instead of empty.
+        # flags, downstream concentration, missing certs) AND the demo events
+        # above — so the Risk page shows meaningful variety on first login.
         engine_svc = RiskScoringEngine(db)
         all_suppliers = tier1 + tier2 + tier3
         for s in all_suppliers:

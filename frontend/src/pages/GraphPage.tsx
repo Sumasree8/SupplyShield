@@ -41,15 +41,55 @@ export function GraphPage() {
     if (nodes.length === 0) return;
 
     const el = svgRef.current;
-    const width = el.clientWidth || 900;
-    const height = el.clientHeight || 600;
+    let sim: d3.Simulation<SimNode, undefined> | null = null;
+    let frame = 0;
+    let lastW = 0;
+    let lastH = 0;
 
-    d3.select(el).selectAll('*').remove();
+    const render = () => {
+      // Measure the real rendered box. getBoundingClientRect is reliable for
+      // inline SVG (clientWidth/clientHeight can read 0), and we set a viewBox
+      // so node coordinates always map into the visible area.
+      const rect = el.getBoundingClientRect();
+      const width = Math.max(Math.round(rect.width), 320);
+      const height = Math.max(Math.round(rect.height), 320);
 
-    const svg = d3.select(el)
-      .attr('width', width)
-      .attr('height', height);
+      // Only rebuild when the size actually changed. Without this guard the
+      // ResizeObserver can fire repeatedly and reset every node back to the
+      // centre each frame — which looks like the graph "collapsing" to one dot.
+      if (sim && width === lastW && height === lastH) return;
+      lastW = width;
+      lastH = height;
 
+      if (sim) sim.stop();
+      d3.select(el).selectAll('*').remove();
+
+      const svg = d3.select(el)
+        .attr('width', width)
+        .attr('height', height)
+        .attr('viewBox', `0 0 ${width} ${height}`)
+        .attr('preserveAspectRatio', 'xMidYMid meet');
+
+      buildGraph(svg, width, height, nodes, edges);
+    };
+
+    // Defer one frame so the flex layout has settled before we measure.
+    frame = requestAnimationFrame(render);
+
+    // Re-render if the container resizes (sidebar toggle, window resize, etc.).
+    const ro = new ResizeObserver(() => {
+      cancelAnimationFrame(frame);
+      frame = requestAnimationFrame(render);
+    });
+    ro.observe(el);
+
+    const buildGraph = (
+      svg: d3.Selection<SVGSVGElement, unknown, null, undefined>,
+      width: number,
+      height: number,
+      nodesIn: typeof nodes,
+      edgesIn: typeof edges,
+    ) => {
     // Defs: arrowhead
     svg.append('defs').append('marker')
       .attr('id', 'arrow')
@@ -74,11 +114,16 @@ export function GraphPage() {
     svg.call(zoom);
     zoomRef.current = zoom;
 
-    // Simulation
-    const simNodes: SimNode[] = nodes.map(n => ({ ...n, x: width / 2, y: height / 2 }));
+    // Simulation. Seed initial positions spread around the centre (not all on
+    // the exact centre point) so the layout fans out smoothly.
+    const simNodes: SimNode[] = nodesIn.map((n, i) => {
+      const angle = (i / nodesIn.length) * 2 * Math.PI;
+      const r = Math.min(width, height) / 4;
+      return { ...n, x: width / 2 + r * Math.cos(angle), y: height / 2 + r * Math.sin(angle) };
+    });
     const nodeMap = new Map(simNodes.map(n => [n.id, n]));
 
-    const simEdges: SimEdge[] = edges
+    const simEdges: SimEdge[] = edgesIn
       .map(e => ({
         ...e,
         source: nodeMap.get(e.source) as SimNode,
@@ -86,11 +131,14 @@ export function GraphPage() {
       }))
       .filter((e): e is SimEdge => !!e.source && !!e.target);
 
-    const sim = d3.forceSimulation<SimNode>(simNodes)
-      .force('link', d3.forceLink<SimNode, SimEdge>(simEdges).id(d => d.id).distance(120).strength(0.5))
-      .force('charge', d3.forceManyBody().strength(-400))
-      .force('center', d3.forceCenter(width / 2, height / 2))
-      .force('collision', d3.forceCollide(NODE_RADIUS + 12));
+    const simulation = d3.forceSimulation<SimNode>(simNodes)
+      .force('link', d3.forceLink<SimNode, SimEdge>(simEdges).id(d => d.id).distance(110).strength(0.4))
+      .force('charge', d3.forceManyBody().strength(-300))
+      // Pull toward the centre on both axes so nodes can't drift off-screen.
+      .force('x', d3.forceX(width / 2).strength(0.07))
+      .force('y', d3.forceY(height / 2).strength(0.07))
+      .force('collision', d3.forceCollide(NODE_RADIUS + 14));
+    sim = simulation;  // expose for cleanup
 
     // Edges
     const link = g.append('g')
@@ -110,13 +158,13 @@ export function GraphPage() {
       .call(
         d3.drag<SVGGElement, SimNode>()
           .on('start', (event, d) => {
-            if (!event.active) sim.alphaTarget(0.3).restart();
+            if (!event.active) simulation.alphaTarget(0.3).restart();
             d.fx = d.x;
             d.fy = d.y;
           })
           .on('drag', (event, d) => { d.fx = event.x; d.fy = event.y; })
           .on('end', (event, d) => {
-            if (!event.active) sim.alphaTarget(0);
+            if (!event.active) simulation.alphaTarget(0);
             d.fx = null;
             d.fy = null;
           })
@@ -147,7 +195,14 @@ export function GraphPage() {
       .attr('pointer-events', 'none')
       .text(d => d.label.length > 20 ? d.label.slice(0, 18) + '…' : d.label);
 
-    sim.on('tick', () => {
+    const pad = NODE_RADIUS + 4;
+    simulation.on('tick', () => {
+      // Clamp every node inside the viewport so nothing escapes the canvas.
+      simNodes.forEach(d => {
+        d.x = Math.max(pad, Math.min(width - pad, d.x ?? width / 2));
+        d.y = Math.max(pad, Math.min(height - pad, d.y ?? height / 2));
+      });
+
       link
         .attr('x1', d => d.source.x ?? 0)
         .attr('y1', d => d.source.y ?? 0)
@@ -156,8 +211,13 @@ export function GraphPage() {
 
       node.attr('transform', d => `translate(${d.x ?? 0},${d.y ?? 0})`);
     });
+    };  // end buildGraph
 
-    return () => { sim.stop(); };
+    return () => {
+      cancelAnimationFrame(frame);
+      ro.disconnect();
+      if (sim) sim.stop();
+    };
   }, [graphData]);
 
   const handleZoom = (factor: number) => {

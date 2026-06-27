@@ -22,6 +22,7 @@ from sqlalchemy.pool import StaticPool
 
 from src.config.database import Base, get_db
 from src.main import create_app
+from src.middleware.rate_limit import reset_rate_limits
 from src.models.core import Organization, User, UserRole
 from src.services.auth_service import hash_password, create_access_token
 
@@ -29,6 +30,14 @@ from src.services.auth_service import hash_password, create_access_token
 import src.models.core  # noqa: F401
 import src.models.supply_chain  # noqa: F401
 import src.models.risk  # noqa: F401
+
+
+@pytest.fixture(autouse=True)
+def _reset_rate_limits():
+    """Each test starts with a clean rate-limit window."""
+    reset_rate_limits()
+    yield
+    reset_rate_limits()
 
 
 @pytest_asyncio.fixture

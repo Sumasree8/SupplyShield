@@ -1,13 +1,14 @@
 """Authentication API routes."""
 from datetime import datetime, timezone
-from typing import Annotated
+from typing import Optional
 
 import structlog
-from fastapi import APIRouter, Depends, HTTPException, status, Request
+from fastapi import APIRouter, Depends, HTTPException, status, Request, Response, Cookie
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.config.database import get_db
+from src.config.settings import get_settings
 from src.models.core import User, Organization, AuditLog, UserRole
 from src.services.auth_service import (
     authenticate_user, create_access_token, create_refresh_token,
@@ -17,16 +18,41 @@ from src.api.schemas.auth import (
     LoginRequest, TokenResponse, RegisterRequest, UserResponse
 )
 from src.middleware.auth import get_current_user
+from src.middleware.rate_limit import login_rate_limiter, register_rate_limiter
 
 log = structlog.get_logger()
+settings = get_settings()
 router = APIRouter()
+
+# The refresh token is stored in an httpOnly cookie (never exposed to JS) and
+# scoped to the auth routes so it isn't sent on every API call.
+REFRESH_COOKIE = "refresh_token"
+REFRESH_COOKIE_PATH = "/api/v1/auth"
+
+
+def _set_refresh_cookie(response: Response, token: str) -> None:
+    response.set_cookie(
+        key=REFRESH_COOKIE,
+        value=token,
+        httponly=True,
+        secure=settings.ENVIRONMENT == "production",  # requires HTTPS in prod
+        samesite="lax",
+        max_age=settings.JWT_REFRESH_TOKEN_EXPIRE_DAYS * 24 * 3600,
+        path=REFRESH_COOKIE_PATH,
+    )
+
+
+def _clear_refresh_cookie(response: Response) -> None:
+    response.delete_cookie(REFRESH_COOKIE, path=REFRESH_COOKIE_PATH)
 
 
 @router.post("/login", response_model=TokenResponse)
 async def login(
     request: Request,
     payload: LoginRequest,
+    response: Response,
     db: AsyncSession = Depends(get_db),
+    _: None = Depends(login_rate_limiter),
 ):
     user = await authenticate_user(db, payload.email, payload.password)
     if not user:
@@ -51,13 +77,17 @@ async def login(
     access_token = create_access_token(str(user.id), str(user.organization_id), user.role.value)
     refresh_token = create_refresh_token(str(user.id))
 
+    # Refresh token goes into an httpOnly cookie — not the JSON body — so it is
+    # not reachable by JavaScript (XSS-resistant). Only the short-lived access
+    # token is returned to the client.
+    _set_refresh_cookie(response, refresh_token)
+
     log.info("auth.login_success", user_id=str(user.id), email=user.email)
 
     return TokenResponse(
         access_token=access_token,
-        refresh_token=refresh_token,
         token_type="bearer",
-        expires_in=3600,
+        expires_in=settings.JWT_ACCESS_TOKEN_EXPIRE_MINUTES * 60,
     )
 
 
@@ -65,6 +95,7 @@ async def login(
 async def register(
     payload: RegisterRequest,
     db: AsyncSession = Depends(get_db),
+    _: None = Depends(register_rate_limiter),
 ):
     """Register a new organization and admin user."""
     # Check email uniqueness
@@ -106,9 +137,14 @@ async def register(
 
 @router.post("/refresh", response_model=TokenResponse)
 async def refresh_token(
-    refresh_token: str,
+    response: Response,
+    refresh_token: Optional[str] = Cookie(default=None),
     db: AsyncSession = Depends(get_db),
 ):
+    """Rotate the session: read the refresh token from the httpOnly cookie,
+    issue a new access token, and rotate the refresh cookie."""
+    if not refresh_token:
+        raise HTTPException(status_code=401, detail="Missing refresh token")
     try:
         payload = decode_token(refresh_token)
         if payload.get("type") != "refresh":
@@ -121,15 +157,22 @@ async def refresh_token(
 
         access_token = create_access_token(str(user.id), str(user.organization_id), user.role.value)
         new_refresh = create_refresh_token(str(user.id))
+        _set_refresh_cookie(response, new_refresh)  # rotate
 
         return TokenResponse(
             access_token=access_token,
-            refresh_token=new_refresh,
             token_type="bearer",
-            expires_in=3600,
+            expires_in=settings.JWT_ACCESS_TOKEN_EXPIRE_MINUTES * 60,
         )
     except ValueError as e:
         raise HTTPException(status_code=401, detail=str(e))
+
+
+@router.post("/logout")
+async def logout(response: Response):
+    """Clear the refresh-token cookie. The client also discards its access token."""
+    _clear_refresh_cookie(response)
+    return {"detail": "Logged out"}
 
 
 @router.get("/me", response_model=UserResponse)

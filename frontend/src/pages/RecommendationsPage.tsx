@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { Link } from 'react-router-dom';
 import { Lightbulb, ChevronDown, ChevronUp, ExternalLink, AlertTriangle } from 'lucide-react';
@@ -15,6 +15,14 @@ export function RecommendationsPage() {
     queryKey: ['suppliers-all-for-rec'],
     queryFn: () => api.listSuppliers({ page_size: 100 }),
   });
+
+  // Auto-select the first supplier so recommendations are shown immediately
+  // rather than presenting a blank page on first load.
+  useEffect(() => {
+    if (!selectedSupplierId && suppliers?.items?.length) {
+      setSelectedSupplierId(suppliers.items[0].id);
+    }
+  }, [suppliers, selectedSupplierId]);
 
   const { data: recommendations, isLoading, isFetching } = useQuery({
     queryKey: ['recommendations', selectedSupplierId, maxResults],

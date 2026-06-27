@@ -26,9 +26,11 @@ class RegisterRequest(BaseModel):
 
 class TokenResponse(BaseModel):
     access_token: str
-    refresh_token: str
     token_type: str
     expires_in: int
+    # Refresh token is delivered via an httpOnly cookie, not the body. Kept
+    # optional for backward compatibility with any non-browser clients.
+    refresh_token: Optional[str] = None
 
 
 class UserResponse(BaseModel):

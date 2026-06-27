@@ -19,6 +19,21 @@ export interface AuthTokens {
   expires_in: number;
 }
 
+export interface SupplierRiskScore {
+  supplier_id: string;
+  supplier_name: string;
+  country: string;
+  tier: number;
+  overall_score: number;
+  risk_level: 'critical' | 'high' | 'medium' | 'low';
+  climate_score: number | null;
+  geopolitical_score: number | null;
+  operational_score: number | null;
+  logistics_score: number | null;
+  dependency_score: number | null;
+  calculated_at: string;
+}
+
 export type SupplierStatus = 'active' | 'inactive' | 'under_review' | 'suspended';
 
 export interface Supplier {
