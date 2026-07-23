@@ -2,10 +2,11 @@
 Application settings with environment variable support.
 All secrets loaded from environment — never hardcoded.
 """
+import json
 from functools import lru_cache
-from typing import List, Optional
-from pydantic import model_validator
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from typing import Annotated, List, Optional
+from pydantic import field_validator, model_validator
+from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 
 class Settings(BaseSettings):
@@ -15,9 +16,16 @@ class Settings(BaseSettings):
     APP_NAME: str = "SupplyShield AI"
     ENVIRONMENT: str = "development"
     DEBUG: bool = False
+    # When true, seed demo data on startup IF the database is empty (never
+    # drops). Safe to leave on; used for one-shot seeding on hosted deploys.
+    SEED_ON_STARTUP: bool = False
     SECRET_KEY: str  # Required — must be set in environment
-    ALLOWED_HOSTS: List[str] = ["*"]
-    CORS_ORIGINS: List[str] = ["http://localhost:3000", "http://localhost:5173"]
+    # NoDecode: skip pydantic-settings' built-in JSON parsing so the validator
+    # below can accept EITHER a JSON array (["a","b"]) OR a plain comma-separated
+    # string (a,b) from the environment — the latter is far easier to set in
+    # hosting dashboards (Render, Railway) that mangle quotes.
+    ALLOWED_HOSTS: Annotated[List[str], NoDecode] = ["*"]
+    CORS_ORIGINS: Annotated[List[str], NoDecode] = ["http://localhost:3000", "http://localhost:5173"]
 
     # Database (PostgreSQL)
     DATABASE_URL: str  # Required — postgresql+asyncpg://user:pass@host:port/dbname
@@ -61,6 +69,19 @@ class Settings(BaseSettings):
     # Pagination
     DEFAULT_PAGE_SIZE: int = 20
     MAX_PAGE_SIZE: int = 100
+
+    @field_validator("ALLOWED_HOSTS", "CORS_ORIGINS", mode="before")
+    @classmethod
+    def _split_list(cls, v):
+        """Accept a JSON array, a comma-separated string, or an actual list."""
+        if isinstance(v, str):
+            s = v.strip()
+            if not s:
+                return []
+            if s.startswith("["):
+                return json.loads(s)
+            return [item.strip() for item in s.split(",") if item.strip()]
+        return v
 
     @model_validator(mode="after")
     def _enforce_production_safety(self) -> "Settings":

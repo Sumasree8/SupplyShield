@@ -31,6 +31,15 @@ async def lifespan(app: FastAPI):
         await conn.run_sync(Base.metadata.create_all)
     log.info("database.initialized")
 
+    # Optionally seed demo data on first boot (only when the DB is empty).
+    if settings.SEED_ON_STARTUP:
+        try:
+            from scripts.seed_demo import seed_if_empty
+            seeded = await seed_if_empty()
+            log.info("demo_seed.checked", seeded=seeded)
+        except Exception as e:
+            log.warning("demo_seed.failed", error=str(e))
+
     # Verify graph database connection (sync driver — offload to a thread)
     try:
         driver = get_graph_driver()

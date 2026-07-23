@@ -1,18 +1,20 @@
 #!/usr/bin/env python3
 """
-SupplyShield AI — Development Seed Script
+SupplyShield AI — Demo Seed Script
 
 Creates a realistic automotive supply chain for demonstration purposes.
 
 Usage:
-    python scripts/seed_demo.py
+    python scripts/seed_demo.py          # DROPS + recreates tables, then seeds (dev only)
+
+Programmatic (production-safe):
+    from scripts.seed_demo import seed_if_empty
+    await seed_if_empty()                 # seeds ONLY if the DB has no users; never drops
 
 Requires DATABASE_URL and SECRET_KEY in environment (or .env file).
 """
 import asyncio
-import os
 import sys
-import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -23,29 +25,14 @@ from dotenv import load_dotenv
 load_dotenv()
 
 
-
-async def seed():
-    # Late import so settings can load from .env
-    from src.config.settings import get_settings
-    from src.config.database import AsyncSessionLocal, Base, engine
+async def _populate():
+    """Insert the demo dataset. Assumes tables already exist and are empty."""
+    from src.config.database import AsyncSessionLocal
     from src.models.core import Organization, User
     from src.models.supply_chain import Supplier, Material, SupplierMaterial, SupplyRelationship
     from src.models.risk import Alert, AlertSeverity, AlertStatus, RiskCategory, RiskEvent
     from src.services.auth_service import hash_password
     from src.services.risk_scoring_service import RiskScoringEngine
-
-    # Safety: never let the demo seeder (which RESETS all tables) run in prod.
-    if get_settings().ENVIRONMENT == "production":
-        print("Refusing to run the demo seeder with ENVIRONMENT=production.")
-        sys.exit(1)
-
-    print("SupplyShield AI — Demo Seed Script")
-    print("Seeding a realistic demo supply chain...\n")
-
-    # Reset to a clean slate so the seeder is safely re-runnable.
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.drop_all)
-        await conn.run_sync(Base.metadata.create_all)
 
     async with AsyncSessionLocal() as db:
 
@@ -327,6 +314,50 @@ async def seed():
     print("NOTE: This is demo data, intended for development only.")
     print("Do not use these credentials in a production environment.")
     print("=" * 60)
+
+
+async def seed_if_empty() -> bool:
+    """Production-safe seeding: populate ONLY when there are no users yet.
+
+    Never drops tables, so it is safe to call on every startup and idempotent
+    across restarts (free-tier sleep/wake). Returns True if it seeded.
+    """
+    from sqlalchemy import func, select
+
+    from src.config.database import AsyncSessionLocal
+    from src.models.core import User
+
+    async with AsyncSessionLocal() as db:
+        existing = await db.scalar(select(func.count()).select_from(User))
+    if existing and existing > 0:
+        print(f"seed_if_empty: {existing} users already present — skipping.")
+        return False
+
+    print("seed_if_empty: empty database detected — seeding demo data...")
+    await _populate()
+    return True
+
+
+async def seed():
+    """CLI entrypoint: DROP + recreate tables, then populate. Development only."""
+    from src.config.settings import get_settings
+    from src.config.database import Base, engine
+
+    # Safety: never let the destructive CLI seeder run in prod.
+    if get_settings().ENVIRONMENT == "production":
+        print("Refusing to run the demo seeder with ENVIRONMENT=production.")
+        print("For production use the startup flag SEED_ON_STARTUP=true (seed_if_empty).")
+        sys.exit(1)
+
+    print("SupplyShield AI — Demo Seed Script")
+    print("Seeding a realistic demo supply chain...\n")
+
+    # Reset to a clean slate so the CLI seeder is safely re-runnable.
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.drop_all)
+        await conn.run_sync(Base.metadata.create_all)
+
+    await _populate()
 
 
 if __name__ == "__main__":
