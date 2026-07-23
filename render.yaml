@@ -1,0 +1,41 @@
+# Render Blueprint — SupplyShield AI backend (FastAPI)
+# Deploy: push to GitHub, then New + > Blueprint and point at this repo.
+# Databases (Postgres/Redis/Neo4j) are external free tiers — set their URLs
+# as environment variables in the Render dashboard (sync: false below).
+services:
+  - type: web
+    name: supplyshield-api
+    runtime: docker
+    plan: free
+    dockerfilePath: ./backend/Dockerfile
+    dockerContext: ./backend
+    # Override the image CMD: use Render's $PORT and drop --workers 4
+    # (free tier has 512MB RAM — 4 uvicorn workers will OOM).
+    dockerCommand: uvicorn src.main:app --host 0.0.0.0 --port $PORT --workers 2
+    healthCheckPath: /api/v1/health
+    autoDeploy: true
+    envVars:
+      - key: ENVIRONMENT
+        value: production
+      # Secrets & connection strings — set these in the dashboard, not in git.
+      - key: SECRET_KEY
+        sync: false
+      - key: DATABASE_URL
+        sync: false
+      - key: REDIS_URL
+        sync: false
+      - key: NEO4J_URI
+        sync: false
+      - key: NEO4J_USERNAME
+        sync: false
+      - key: NEO4J_PASSWORD
+        sync: false
+      - key: NEO4J_DATABASE
+        sync: false
+      # JSON arrays. ALLOWED_HOSTS: your Render host. CORS_ORIGINS: your Vercel origin.
+      # With the Vercel /api proxy (vercel.json) the frontend is same-origin, so
+      # CORS_ORIGINS is only needed if you also call the API directly.
+      - key: ALLOWED_HOSTS
+        sync: false
+      - key: CORS_ORIGINS
+        sync: false
