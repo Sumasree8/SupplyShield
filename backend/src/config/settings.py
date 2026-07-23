@@ -4,9 +4,9 @@ All secrets loaded from environment — never hardcoded.
 """
 import json
 from functools import lru_cache
-from typing import Annotated, List, Optional
-from pydantic import field_validator, model_validator
-from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
+from typing import List, Optional
+from pydantic import Field, model_validator
+from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
@@ -20,12 +20,16 @@ class Settings(BaseSettings):
     # drops). Safe to leave on; used for one-shot seeding on hosted deploys.
     SEED_ON_STARTUP: bool = False
     SECRET_KEY: str  # Required — must be set in environment
-    # NoDecode: skip pydantic-settings' built-in JSON parsing so the validator
-    # below can accept EITHER a JSON array (["a","b"]) OR a plain comma-separated
-    # string (a,b) from the environment — the latter is far easier to set in
-    # hosting dashboards (Render, Railway) that mangle quotes.
-    ALLOWED_HOSTS: Annotated[List[str], NoDecode] = ["*"]
-    CORS_ORIGINS: Annotated[List[str], NoDecode] = ["http://localhost:3000", "http://localhost:5173"]
+    # Stored as raw strings and exposed as parsed lists via the properties
+    # below. Typed as `str` (not List) so pydantic-settings does NOT try to
+    # JSON-decode the env value — that lets us accept EITHER a JSON array
+    # (["a","b"]) OR a plain comma-separated string (a,b), the latter being far
+    # easier to set in hosting dashboards (Render, Railway) that mangle quotes.
+    ALLOWED_HOSTS_RAW: str = Field(default="*", alias="ALLOWED_HOSTS")
+    CORS_ORIGINS_RAW: str = Field(
+        default="http://localhost:3000,http://localhost:5173",
+        alias="CORS_ORIGINS",
+    )
 
     # Database (PostgreSQL)
     DATABASE_URL: str  # Required — postgresql+asyncpg://user:pass@host:port/dbname
@@ -70,18 +74,23 @@ class Settings(BaseSettings):
     DEFAULT_PAGE_SIZE: int = 20
     MAX_PAGE_SIZE: int = 100
 
-    @field_validator("ALLOWED_HOSTS", "CORS_ORIGINS", mode="before")
-    @classmethod
-    def _split_list(cls, v):
-        """Accept a JSON array, a comma-separated string, or an actual list."""
-        if isinstance(v, str):
-            s = v.strip()
-            if not s:
-                return []
-            if s.startswith("["):
-                return json.loads(s)
-            return [item.strip() for item in s.split(",") if item.strip()]
-        return v
+    @staticmethod
+    def _parse_list(value: str) -> List[str]:
+        """Accept a JSON array (["a","b"]) or a comma-separated string (a,b)."""
+        s = (value or "").strip()
+        if not s:
+            return []
+        if s.startswith("["):
+            return json.loads(s)
+        return [item.strip() for item in s.split(",") if item.strip()]
+
+    @property
+    def ALLOWED_HOSTS(self) -> List[str]:
+        return self._parse_list(self.ALLOWED_HOSTS_RAW)
+
+    @property
+    def CORS_ORIGINS(self) -> List[str]:
+        return self._parse_list(self.CORS_ORIGINS_RAW)
 
     @model_validator(mode="after")
     def _enforce_production_safety(self) -> "Settings":
